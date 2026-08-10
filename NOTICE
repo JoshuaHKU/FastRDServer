@@ -1,0 +1,34 @@
+FastRDServer
+============
+
+This is an UNOFFICIAL fork of rustdesk-server (the open-source edition).
+It is NOT affiliated with, endorsed by, or supported by RustDesk or Purslane Ltd.
+"RustDesk" is a trademark of Purslane Ltd.
+
+Upstream:  https://github.com/rustdesk/rustdesk-server
+Baseline:  1.1.17
+License:   GNU Affero General Public License v3.0 (unchanged from upstream)
+
+Modifications made in this fork (summary; see README.md for detail):
+
+  * User accounts: user/user_token tables, argon2id13 password hashing,
+    an HTTP API for login, address-book sync and self-service password change.
+    Login payloads are sealed with libsodium sealed boxes.
+  * Devices bind to an account; the device roster is filtered by group.
+  * Same-account devices reach each other without a password; the decision is
+    made server-side and carried on the punch-hole/relay messages.
+  * A device-enumeration request added to the rendezvous protocol, with a
+    mandatory server-key check.
+  * RegisterPk carries hostname and platform so rosters are readable.
+  * Admin CLI extended: user add/passwd/disable/enable/list, and
+    bind/unbind/devices for assigning devices to accounts.
+  * Binaries renamed: hbbs -> FastRDServer, hbbr -> FastRDRelay,
+    rustdesk-utils -> FastRDServer-utils.
+
+Per AGPL-3.0 section 5, this file and README.md carry prominent notice that the
+work is modified and what was changed. Modified source files additionally carry
+`LOCAL FORK:` comments at each changed site explaining what differs from
+upstream and why.
+
+NO WARRANTY. This is a personal fork, provided as-is, with no commercial
+support of any kind. See sections 15 and 16 of the license.

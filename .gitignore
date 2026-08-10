@@ -1,0 +1,20 @@
+target
+id*
+db*
+debian-build
+debian/.debhelper
+debian/debhelper-build-stamp
+.DS_Store
+.vscode
+src/version.rs
+# db_v2.sqlite3 由 build.rs 从 schema.sql 生成(sqlx 查询宏编译期要读表结构)，
+# 是构建产物，不入库。要改表结构请改 schema.sql。
+db_v2.sqlite3
+db_v2.sqlite3-shm
+db_v2.sqlite3-wal
+test.*
+.idea
+
+# Vendored dependencies: 912 MB of third-party source, shipped to the offline
+# build host as a tarball rather than tracked here.
+/vendor/

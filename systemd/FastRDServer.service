@@ -1,0 +1,24 @@
+[Unit]
+Description=FastRustDesk ID/Rendezvous Server (FastRDServer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+LimitNOFILE=1000000
+# -p 41116 是基准端口，其余四个由它派生，不能分别指定：
+#   41115 NAT 类型探测 (port-1)   41116 ID 注册/信令 (tcp+udp)
+#   41118 WebSocket ID (port+2)   41114 账号 HTTP API (port-2)
+# -r  打洞失败时下发给客户端的中继地址
+# -k _ 用工作目录下的 id_ed25519，并强制客户端持有匹配公钥
+ExecStart=/home/FastRDSvr/bin/FastRDServer -p 41116 -r rd.example.com:41117 -k _
+WorkingDirectory=/home/FastRDSvr/data
+User=fastrd
+Group=fastrd
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/FastRDSvr/logs/FastRDServer.log
+StandardError=append:/home/FastRDSvr/logs/FastRDServer.error
+
+[Install]
+WantedBy=multi-user.target

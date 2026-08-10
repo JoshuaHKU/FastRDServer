@@ -1,0 +1,20 @@
+[Unit]
+Description=FastRustDesk Relay Server (FastRDRelay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+LimitNOFILE=1000000
+# -p 41117 中继端口；WebSocket 中继在 41119 (port+2)，同样是派生的
+ExecStart=/home/FastRDSvr/bin/FastRDRelay -p 41117 -k _
+WorkingDirectory=/home/FastRDSvr/data
+User=fastrd
+Group=fastrd
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/FastRDSvr/logs/FastRDRelay.log
+StandardError=append:/home/FastRDSvr/logs/FastRDRelay.error
+
+[Install]
+WantedBy=multi-user.target
