@@ -133,6 +133,34 @@ numbers with nothing to recognise. Devices now report hostname and platform when
 they register — on `RegisterPk` rather than in the heartbeat, because it is
 static information and the heartbeat runs every few seconds.
 
+### 6. UDP hole punching (fast.2)
+
+FastRustDesk / RustDesk 1.4.x clients have long been able to punch a UDP hole
+(and run KCP over it), but the open-source server never played its part — that
+was left to the commercial edition. Every client `UDP NAT test` timed out, and
+whenever TCP punching failed the session fell back to the relay, **sending all
+video through the server**. This fork adds the three server-side pieces:
+
+1. Answer `TestNatRequest` on the signalling port's **UDP** socket, telling the
+   client its port outside the NAT.
+2. When forwarding a `PunchHoleRequest`, pass the requester's `udp_port` and
+   `force_relay` on to the host in `PunchHole`.
+3. Accept the host's `PunchHoleSent` over UDP and answer the requester, on the
+   TCP connection it is waiting on, with `PunchHoleResponse { is_udp = true }`.
+
+**No client change and no client release are needed.** If the punch fails the
+client falls back to TCP punching and then to the relay, so **the worst case is
+the old behaviour**. A punched session no longer passes through the server; on a
+VPS billed by traffic, that saves essentially all of the session's relay traffic.
+
+- Whether a punch succeeds depends on both NATs: cone ↔ cone usually works;
+  symmetric NAT (phone hotspots, carrier-grade NAT) almost never does. A host
+  that sees a symmetric-NAT requester goes straight to the relay.
+- `PunchHoleSent` is accepted only from the device's **registered IP**;
+  `TestNatRequest` is rate-limited per source IP (40 per 10 s).
+- Set the environment variable `UDP_PUNCH=N` to turn all of this off.
+- Logs: server `UDP punch requested` / `UDP punch:`; client `UDP Hole Punched`.
+
 ## Ports: one is configurable, the rest are derived
 
 Only `-p` can be set. Every other port is computed, by the same formula on both

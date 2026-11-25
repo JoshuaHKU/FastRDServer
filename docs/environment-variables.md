@@ -48,6 +48,7 @@ in the inherited process environment.
 | `ALWAYS_USE_RELAY` 🅴 | *(none)* | `N` | `Y` forces every session through a relay (disables direct/hole‑punched connections). At runtime, send `always-use-relay Y` or `always-use-relay N` to the `hbbs` [loopback console](#runtime-console). |
 | `DB_URL` 🅴 | *(none)* | `./db_v2.sqlite3` | Path/URL of the SQLite database file. See [Database](#database). |
 | `MAX_DATABASE_CONNECTIONS` 🅴 | *(none)* | `1` | Size of the SQLite connection pool. |
+| `UDP_PUNCH` | *(none)* | `Y` | **FastRDServer only.** `N` turns off the server side of UDP hole punching: no UDP `TestNatResponse`, no `udp_port` forwarded in `PunchHole`, and UDP `PunchHoleSent` is ignored. Clients then fall back to TCP punching / relay, as with the upstream server. |
 
 🅴 = set through the inherited process environment.
 

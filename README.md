@@ -113,6 +113,28 @@ FastRDServer-utils user unbind <设备ID>
 服务器原本**只存 IP**，设备列表里全是九位数字，无法辨认。现在注册时一并上报
 主机名和平台。放在 `RegisterPk` 而不是心跳里——它是静态信息，而心跳每几秒一次。
 
+### 6. UDP 打洞（fast.2）
+
+FastRustDesk / RustDesk 1.4.x 客户端早就会 UDP 打洞（再在 UDP 上跑 KCP），但开源版
+服务端不配合——这部分上游留给了商业版。结果是客户端每次 `UDP NAT test` 都超时，
+TCP 打洞不通就只能中继，**视频流全部绕经服务器**。本分支补上了服务端的三处：
+
+1. 在信令端口的 **UDP** 上回应 `TestNatRequest`，告诉客户端它在 NAT 外的端口；
+2. 转发 `PunchHoleRequest` 时，把请求方的 `udp_port` 和 `force_relay` 带进发给被控端的 `PunchHole`；
+3. 接收被控端经 UDP 发来的 `PunchHoleSent`，在请求方正在等待的 TCP 连接上回
+   `PunchHoleResponse { is_udp = true }`，双方随即直连。
+
+客户端**不用改、不用重新发版**。打不通时客户端自己退回 TCP 打洞、再退回中继，
+**最坏情况和以前一样**。打通的会话不再经过服务器，自建在按流量计费的 VPS 上时，
+省下的基本就是这个会话的全部中继流量。
+
+- 是否打得通取决于双方的 NAT 类型：锥形 ↔ 锥形通常可以；对称型（手机热点、
+  运营商级 NAT）基本不行。被控端发现请求方是对称型 NAT 时会直接走中继。
+- `PunchHoleSent` 只接受来自该设备**已注册 IP** 的 UDP 包；`TestNatRequest`
+  按来源 IP 限速（每 10 秒 40 次）。
+- 设环境变量 `UDP_PUNCH=N` 可整体关闭，回到原来的行为。
+- 日志：服务端 `UDP punch requested` / `UDP punch:`；客户端 `UDP Hole Punched`。
+
 ## 端口：只有一个能指定，其余是派生的
 
 `-p` 之外的端口**不能分别指定**，服务端和客户端两侧按同一套公式算：
