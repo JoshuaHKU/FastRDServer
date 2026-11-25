@@ -218,7 +218,11 @@ impl RendezvousServer {
         }
         log::info!(
             "UDP_PUNCH={}",
-            if UDP_PUNCH.load(Ordering::SeqCst) { "Y" } else { "N" }
+            if UDP_PUNCH.load(Ordering::SeqCst) {
+                "Y"
+            } else {
+                "N"
+            }
         );
         log::info!(
             "ALWAYS_USE_RELAY={}",
@@ -807,11 +811,24 @@ impl RendezvousServer {
     }
 
     /// LOCAL FORK (P2-a): `PunchHoleSent` received over UDP.
-    async fn handle_udp_hole_sent(&mut self, phs: PunchHoleSent, addr: SocketAddr) -> ResultType<()> {
+    async fn handle_udp_hole_sent(
+        &mut self,
+        phs: PunchHoleSent,
+        addr: SocketAddr,
+    ) -> ResultType<()> {
         let addr_a = AddrMangle::decode(&phs.socket_addr);
         // Only answer a requester that is actually waiting on a TCP punch.
-        if !self.tcp_punch.lock().await.contains_key(&try_into_v4(addr_a)) {
-            log::debug!("UDP punch hole sent from {:?} for {:?}: no pending request", addr, addr_a);
+        if !self
+            .tcp_punch
+            .lock()
+            .await
+            .contains_key(&try_into_v4(addr_a))
+        {
+            log::debug!(
+                "UDP punch hole sent from {:?} for {:?}: no pending request",
+                addr,
+                addr_a
+            );
             return Ok(());
         }
         // The datagram must come from the IP the peer registered from; otherwise
@@ -831,7 +848,12 @@ impl RendezvousServer {
             );
             return Ok(());
         }
-        log::info!("UDP punch: {} at {:?} -> requester {:?}", phs.id, addr, addr_a);
+        log::info!(
+            "UDP punch: {} at {:?} -> requester {:?}",
+            phs.id,
+            addr,
+            addr_a
+        );
         let mut msg_out = RendezvousMessage::new();
         let mut p = PunchHoleResponse {
             socket_addr: AddrMangle::encode(addr).into(),
@@ -1030,7 +1052,12 @@ impl RendezvousServer {
                     0
                 };
                 if udp_port > 0 {
-                    log::info!("UDP punch requested: {} from {:?} udp port {}", id, addr, udp_port);
+                    log::info!(
+                        "UDP punch requested: {} from {:?} udp port {}",
+                        id,
+                        addr,
+                        udp_port
+                    );
                 }
                 msg_out.set_punch_hole(PunchHole {
                     socket_addr,
