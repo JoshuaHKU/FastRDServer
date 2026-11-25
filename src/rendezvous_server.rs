@@ -61,6 +61,24 @@ type RelayServers = Vec<String>;
 const CHECK_RELAY_TIMEOUT: u64 = 3_000;
 static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(false);
 
+// LOCAL FORK (P2-a): UDP hole punching. The client and controlled side have
+// supported it since upstream 1.4.x (UDP NAT test, then KCP over the punched
+// socket); only the open-source server was missing its three pieces:
+//   1. answer `TestNatRequest` over UDP, so the client learns its public UDP port;
+//   2. forward `udp_port` / `force_relay` in the `PunchHole` sent to the peer;
+//   3. accept the peer's `PunchHoleSent` over UDP and tell the requester the
+//      peer's public UDP address with `is_udp = true`.
+// Every failure falls back to the old TCP punch / relay on the client, so the
+// worst case is the previous behaviour. `UDP_PUNCH=N` turns all three off.
+static UDP_PUNCH: AtomicBool = AtomicBool::new(true);
+// Per-IP budget for UDP TestNatResponse. A client sends ~10 probes per connect
+// attempt; the reply is a handful of bytes, but it is still a reflector for a
+// spoofed source, so cap it.
+const UDP_NAT_TEST_BUDGET: u32 = 40;
+const UDP_NAT_TEST_WINDOW_SECS: u64 = 10;
+static UDP_NAT_TEST_LIMIT: Lazy<TokioMutex<HashMap<IpAddr, (u32, Instant)>>> =
+    Lazy::new(|| TokioMutex::new(HashMap::new()));
+
 // Store punch hole requests
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex as TokioMutex; // differentiate if needed
@@ -195,6 +213,13 @@ impl RendezvousServer {
         if get_arg("ALWAYS_USE_RELAY").to_uppercase() == "Y" {
             ALWAYS_USE_RELAY.store(true, Ordering::SeqCst);
         }
+        if get_arg("UDP_PUNCH").to_uppercase() == "N" {
+            UDP_PUNCH.store(false, Ordering::SeqCst);
+        }
+        log::info!(
+            "UDP_PUNCH={}",
+            if UDP_PUNCH.load(Ordering::SeqCst) { "Y" } else { "N" }
+        );
         log::info!(
             "ALWAYS_USE_RELAY={}",
             if ALWAYS_USE_RELAY.load(Ordering::SeqCst) {
@@ -542,7 +567,32 @@ impl RendezvousServer {
                     // The supported client path sends PunchHoleRequest over TCP/WS.
                 }
                 Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    // UDP PunchHoleSent is intentionally unsupported to avoid UDP reflection/amplification
+                    // LOCAL FORK (P2-a): the controlled side answers a PunchHole that
+                    // carried `udp_port` from a fresh UDP socket, so `addr` here is its
+                    // public UDP address. The reply never goes back over UDP: it is
+                    // delivered on the requester's pending TCP punch connection, so
+                    // this cannot be used to reflect traffic at a third party.
+                    if UDP_PUNCH.load(Ordering::SeqCst) {
+                        allow_err!(self.handle_udp_hole_sent(phs, addr).await);
+                    }
+                }
+                Some(rendezvous_message::Union::TestNatRequest(tar)) => {
+                    // LOCAL FORK (P2-a): the client's UDP NAT test (`test_udp_uat`).
+                    if UDP_PUNCH.load(Ordering::SeqCst) && udp_nat_test_allowed(addr.ip()).await {
+                        let mut msg_out = RendezvousMessage::new();
+                        let mut res = TestNatResponse {
+                            port: addr.port() as _,
+                            ..Default::default()
+                        };
+                        if self.inner.serial > tar.serial {
+                            let mut cu = ConfigUpdate::new();
+                            cu.serial = self.inner.serial;
+                            cu.rendezvous_servers = (*self.rendezvous_servers).clone();
+                            res.cu = MessageField::from_option(Some(cu));
+                        }
+                        msg_out.set_test_nat_response(res);
+                        socket.send(&msg_out, addr).await?;
+                    }
                 }
                 Some(rendezvous_message::Union::LocalAddr(la)) => {
                     // UDP LocalAddr is intentionally unsupported to avoid UDP reflection/amplification
@@ -756,6 +806,48 @@ impl RendezvousServer {
         Ok(())
     }
 
+    /// LOCAL FORK (P2-a): `PunchHoleSent` received over UDP.
+    async fn handle_udp_hole_sent(&mut self, phs: PunchHoleSent, addr: SocketAddr) -> ResultType<()> {
+        let addr_a = AddrMangle::decode(&phs.socket_addr);
+        // Only answer a requester that is actually waiting on a TCP punch.
+        if !self.tcp_punch.lock().await.contains_key(&try_into_v4(addr_a)) {
+            log::debug!("UDP punch hole sent from {:?} for {:?}: no pending request", addr, addr_a);
+            return Ok(());
+        }
+        // The datagram must come from the IP the peer registered from; otherwise
+        // anyone who guessed a pending requester's address could steer it to
+        // their own host (the session would still fail its key exchange, but
+        // there is no reason to let it get that far).
+        let registered = match self.pm.get_in_memory(&phs.id).await {
+            Some(peer) => peer.read().await.socket_addr,
+            None => return Ok(()),
+        };
+        if try_into_v4(registered).ip() != try_into_v4(addr).ip() {
+            log::info!(
+                "UDP punch hole sent for {} from {:?} ignored: registered from {:?}",
+                phs.id,
+                addr,
+                registered
+            );
+            return Ok(());
+        }
+        log::info!("UDP punch: {} at {:?} -> requester {:?}", phs.id, addr, addr_a);
+        let mut msg_out = RendezvousMessage::new();
+        let mut p = PunchHoleResponse {
+            socket_addr: AddrMangle::encode(addr).into(),
+            pk: self.get_pk(&phs.version, phs.id).await,
+            relay_server: phs.relay_server.clone(),
+            is_udp: true,
+            ..Default::default()
+        };
+        if let Ok(t) = phs.nat_type.enum_value() {
+            p.set_nat_type(t);
+        }
+        msg_out.set_punch_hole_response(p);
+        self.send_to_tcp(msg_out, addr_a).await;
+        Ok(())
+    }
+
     #[inline]
     async fn handle_local_addr<'a>(
         &mut self,
@@ -929,11 +1021,24 @@ impl RendezvousServer {
                     peer_addr,
                     addr
                 );
+                // LOCAL FORK (P2-a): pass the requester's public UDP port through,
+                // so the peer answers from a UDP socket instead of a TCP one.
+                // Not over WebSocket: those clients cannot do UDP at all.
+                let udp_port = if UDP_PUNCH.load(Ordering::SeqCst) && !ws && !ph.force_relay {
+                    ph.udp_port
+                } else {
+                    0
+                };
+                if udp_port > 0 {
+                    log::info!("UDP punch requested: {} from {:?} udp port {}", id, addr, udp_port);
+                }
                 msg_out.set_punch_hole(PunchHole {
                     socket_addr,
                     nat_type: ph.nat_type,
                     relay_server,
                     same_account,
+                    udp_port,
+                    force_relay: ph.force_relay,
                     ..Default::default()
                 });
             }
@@ -1644,4 +1749,18 @@ mod tests {
         let socket = create_udp_listener(Some(bind_addr), 0, 0).await.unwrap();
         assert_eq!(socket.local_addr().unwrap().ip(), bind_addr);
     }
+}
+
+/// LOCAL FORK (P2-a): per-IP budget for UDP `TestNatResponse`.
+async fn udp_nat_test_allowed(ip: IpAddr) -> bool {
+    let mut lock = UDP_NAT_TEST_LIMIT.lock().await;
+    if lock.len() > 10_000 {
+        lock.retain(|_, (_, tm)| tm.elapsed().as_secs() <= UDP_NAT_TEST_WINDOW_SECS);
+    }
+    let e = lock.entry(ip).or_insert((0, Instant::now()));
+    if e.1.elapsed().as_secs() > UDP_NAT_TEST_WINDOW_SECS {
+        *e = (0, Instant::now());
+    }
+    e.0 += 1;
+    e.0 <= UDP_NAT_TEST_BUDGET
 }
